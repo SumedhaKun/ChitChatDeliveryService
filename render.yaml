@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: chitchat-delivery-service
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: KAFKA_BROKERS
+        sync: false
+      - key: KAFKA_CLIENT_ID
+        value: chitchat-delivery-service
+      - key: KAFKA_GROUP_ID
+        value: chitchat-delivery-service
+      - key: KAFKA_SSL
+        value: "true"
+      - key: KAFKA_API_KEY
+        sync: false
+      - key: KAFKA_API_SECRET
+        sync: false
