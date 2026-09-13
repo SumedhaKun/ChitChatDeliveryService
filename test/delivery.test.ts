@@ -31,6 +31,7 @@ describe("DeliveryHandler", () => {
     const first = new FakeSocket();
     const second = new FakeSocket();
     const notify = vi.fn();
+    const logger = { info: vi.fn(), error: vi.fn() };
     presence.setConnection(senderId, senderSocket);
     presence.setConnection(recipientId, first);
     presence.setConnection(recipientId, second);
@@ -42,6 +43,7 @@ describe("DeliveryHandler", () => {
       presence,
       { notifyMessageCreated: notify },
       new TtlDedupe(60_000, 100),
+      logger,
     );
 
     await handler.handle(created);
@@ -54,6 +56,14 @@ describe("DeliveryHandler", () => {
     expect(second.sent).toEqual([expected]);
     expect(senderSocket.sent).toEqual([]);
     expect(notify).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith({
+      event: "delivery_completed",
+      messageId: created.messageId,
+      conversationId: created.conversationId,
+      recipientCount: 1,
+      websocketSends: 2,
+      pushNotifications: 0,
+    });
   });
 
   it("does not push the sender and no-ops for offline recipients", async () => {

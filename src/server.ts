@@ -311,6 +311,9 @@ function run(): void {
     noOpPushNotifier,
     new TtlDedupe(env.DEDUPE_TTL_MS, env.DEDUPE_MAX_ENTRIES),
     {
+      info(event) {
+        logger.info(event);
+      },
       error(message, details) {
         logger.error({ event: "delivery_failed", message, details });
       },
@@ -319,12 +322,7 @@ function run(): void {
   const consumer = createMessageConsumer(
     createConfluentConsumer(readKafkaSettings()),
     (event) => handler.handle(event),
-    (error) => {
-      logger.error({
-        event: "kafka_message_invalid",
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    },
+    logger,
   );
   const service = createDeliveryService({
     port: env.PORT,

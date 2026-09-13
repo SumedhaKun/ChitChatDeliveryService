@@ -88,13 +88,12 @@ describe("createMessageConsumer", () => {
       disconnect,
     };
     const handle = vi.fn(() => Promise.resolve());
-    const onInvalid = vi.fn();
-    const wrapper = createMessageConsumer(consumer, handle, onInvalid);
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const wrapper = createMessageConsumer(consumer, handle, logger);
 
     await wrapper.start();
     expect(subscribe).toHaveBeenCalledWith({
       topic: MESSAGE_CREATED_TOPIC,
-      fromBeginning: false,
     });
     await eachMessage?.({
       message: { value: Buffer.from(JSON.stringify(event)) },
@@ -103,7 +102,15 @@ describe("createMessageConsumer", () => {
     await wrapper.disconnect();
 
     expect(handle).toHaveBeenCalledWith(event);
-    expect(onInvalid).toHaveBeenCalledOnce();
+    expect(logger.info).toHaveBeenCalledWith({
+      event: "kafka_message_received",
+      messageId: event.messageId,
+      conversationId: event.conversationId,
+      senderId: event.senderId,
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "kafka_message_invalid" }),
+    );
     expect(disconnect).toHaveBeenCalledOnce();
   });
 });

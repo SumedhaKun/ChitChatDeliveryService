@@ -61,7 +61,7 @@ export function readKafkaSettings(
 
 export interface ConsumerClient {
   connect(): Promise<void>;
-  subscribe(options: { topic: string; fromBeginning?: boolean }): Promise<void>;
+  subscribe(options: { topic: string }): Promise<void>;
   run(options: {
     eachMessage(payload: { message: { value: Buffer | null } }): Promise<void>;
   }): Promise<void>;
@@ -71,6 +71,11 @@ export interface ConsumerClient {
 export interface MessageConsumer {
   start(): Promise<void>;
   disconnect(): Promise<void>;
+}
+
+export interface ConsumerLogger {
+  info(event: Record<string, unknown>): void;
+  error(event: Record<string, unknown>): void;
 }
 
 export function createConfluentConsumer(
@@ -90,28 +95,52 @@ export function createConfluentConsumer(
         },
   });
   return kafka.consumer({
-    kafkaJS: { groupId: settings.groupId },
+    kafkaJS: {
+      groupId: settings.groupId,
+      fromBeginning: false,
+    },
   });
 }
 
 export function createMessageConsumer(
   consumer: ConsumerClient,
   handle: (event: MessageCreatedEvent) => Promise<void>,
-  onInvalid: (error: unknown) => void = console.error,
+  logger: ConsumerLogger = console,
 ): MessageConsumer {
   return {
     async start() {
       await consumer.connect();
+      logger.info({
+        event: "kafka_consumer_connected",
+        topic: MESSAGE_CREATED_TOPIC,
+      });
       await consumer.subscribe({
         topic: MESSAGE_CREATED_TOPIC,
-        fromBeginning: false,
+      });
+      logger.info({
+        event: "kafka_consumer_subscribed",
+        topic: MESSAGE_CREATED_TOPIC,
+      });
+      logger.info({
+        event: "kafka_consumer_running",
+        topic: MESSAGE_CREATED_TOPIC,
       });
       await consumer.run({
         async eachMessage({ message }) {
           try {
-            await handle(parseMessageCreatedEvent(message.value));
+            const event = parseMessageCreatedEvent(message.value);
+            logger.info({
+              event: "kafka_message_received",
+              messageId: event.messageId,
+              conversationId: event.conversationId,
+              senderId: event.senderId,
+            });
+            await handle(event);
           } catch (error) {
-            onInvalid(error);
+            logger.error({
+              event: "kafka_message_invalid",
+              error: error instanceof Error ? error.message : "Unknown error",
+            });
           }
         },
       });
