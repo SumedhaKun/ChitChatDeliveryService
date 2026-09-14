@@ -10,9 +10,15 @@ import { pathToFileURL } from "node:url";
 
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 
+import { ActivityHub } from "./activity.js";
 import { createSupabaseAuthenticator, type Authenticate } from "./auth.js";
 import { readEnvironment } from "./config.js";
-import { createDatabase, type Database } from "./db.js";
+import {
+  createDatabase,
+  emptyMembers,
+  type Database,
+  type MemberRepository,
+} from "./db.js";
 import { TtlDedupe } from "./dedupe.js";
 import { DeliveryHandler, noOpPushNotifier } from "./delivery.js";
 import { startPresenceHeartbeat, type Heartbeat } from "./heartbeat.js";
@@ -29,6 +35,7 @@ import {
   parseClientFrame,
   type ServerFrame,
 } from "./protocol.js";
+import { DEFAULT_TYPING_TIMEOUT_MS, TypingHub } from "./typing.js";
 
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -45,11 +52,13 @@ export interface DeliveryServiceOptions {
   authenticate: Authenticate;
   presence?: Presence;
   database?: Database;
+  members?: MemberRepository;
   consumer?: MessageConsumer;
   heartbeatIntervalMs?: number;
   connectionStaleMs?: number;
   wsMaxPayloadBytes?: number;
   wsAuthTimeoutMs?: number;
+  typingTimeoutMs?: number;
 }
 
 export interface DeliveryService {
@@ -102,6 +111,7 @@ export function createDeliveryService(
 ): DeliveryService {
   const logger = options.logger ?? console;
   const presence = options.presence ?? new Presence();
+  const members = options.members ?? options.database?.members ?? emptyMembers;
   const port = options.port ?? 0;
   const httpServer = options.httpServer ?? createHealthServer();
   const maxPayload =
@@ -109,6 +119,21 @@ export function createDeliveryService(
   const authTimeoutMs = options.wsAuthTimeoutMs ?? 10_000;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000;
   const connectionStaleMs = options.connectionStaleMs ?? 60_000;
+  const fanoutLogger = {
+    info(event: Record<string, unknown>) {
+      logger.info(event);
+    },
+    error(message: string, details?: unknown) {
+      logger.error({ event: "realtime_delivery_failed", message, details });
+    },
+  };
+  const activity = new ActivityHub(members, presence, fanoutLogger);
+  const typing = new TypingHub(
+    members,
+    presence,
+    options.typingTimeoutMs ?? DEFAULT_TYPING_TIMEOUT_MS,
+    fanoutLogger,
+  );
 
   const webSocketServer = new WebSocketServer({
     server: httpServer,
@@ -117,6 +142,16 @@ export function createDeliveryService(
   const socketUsers = new WeakMap<WebSocket, string>();
   let heartbeat: Heartbeat | undefined;
   let started = false;
+
+  const becomeInactive = (userId: string): void => {
+    void activity.onBecameInactive(userId).catch((error: unknown) => {
+      logger.error({
+        event: "activity_timeout_failed",
+        userId,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    });
+  };
 
   webSocketServer.on("connection", (socket) => {
     const connectionId = randomUUID();
@@ -137,7 +172,11 @@ export function createDeliveryService(
     socket.on("message", (data, isBinary) => {
       processing = processing
         .then(async () => {
-          const parsed = parseClientFrame(normalizeRawData(data), isBinary);
+          const parsed = parseClientFrame(
+            normalizeRawData(data),
+            isBinary,
+            authenticated,
+          );
           if (!parsed.ok) {
             logger.warn({
               event: "frame_rejected",
@@ -148,37 +187,77 @@ export function createDeliveryService(
             return;
           }
 
-          if (authenticated) {
+          if (!authenticated) {
+            if (parsed.frame.type !== "auth") {
+              sendJson(
+                socket,
+                errorFrame(
+                  "INVALID_FRAME",
+                  "First frame must be a valid auth request",
+                ),
+              );
+              return;
+            }
+
+            const user = await options.authenticate(parsed.frame.accessToken);
+            if (user === null) {
+              logger.warn({ event: "auth_failed", connectionId });
+              sendJson(
+                socket,
+                errorFrame("AUTH_FAILED", "Access token is invalid or expired"),
+              );
+              return;
+            }
+
+            authenticated = true;
+            clearTimeout(authTimer);
+            socketUsers.set(socket, user.id);
+            const isFirstConnection = !presence.isActive(user.id);
+            presence.setConnection(user.id, socket);
+            sendJson(socket, { type: "auth_ack" });
+            logger.info({
+              event: "connection_authenticated",
+              connectionId,
+              userId: user.id,
+            });
+            await activity.afterAuthenticated(
+              user.id,
+              socket,
+              isFirstConnection,
+            );
+            return;
+          }
+
+          const userId = socketUsers.get(socket);
+          if (userId === undefined) return;
+
+          if (parsed.frame.type === "activity") {
+            await activity.handleClientAction(userId, parsed.frame.action);
+            return;
+          }
+
+          if (parsed.frame.type !== "typing") return;
+
+          const result = await typing.handle(
+            userId,
+            parsed.frame.conversationId,
+            parsed.frame.isTyping,
+          );
+          if (result === "forbidden") {
+            logger.warn({
+              event: "typing_forbidden",
+              connectionId,
+              userId,
+              conversationId: parsed.frame.conversationId,
+            });
             sendJson(
               socket,
               errorFrame(
-                "UNEXPECTED_FRAME",
-                "Authenticated connections are receive-only",
+                "FORBIDDEN",
+                "You are not a member of this conversation",
               ),
             );
-            return;
           }
-
-          const user = await options.authenticate(parsed.frame.accessToken);
-          if (user === null) {
-            logger.warn({ event: "auth_failed", connectionId });
-            sendJson(
-              socket,
-              errorFrame("AUTH_FAILED", "Access token is invalid or expired"),
-            );
-            return;
-          }
-
-          authenticated = true;
-          clearTimeout(authTimer);
-          socketUsers.set(socket, user.id);
-          presence.setConnection(user.id, socket);
-          sendJson(socket, { type: "auth_ack" });
-          logger.info({
-            event: "connection_authenticated",
-            connectionId,
-            userId: user.id,
-          });
         })
         .catch((error: unknown) => {
           logger.error({
@@ -213,6 +292,9 @@ export function createDeliveryService(
       const userId = socketUsers.get(socket);
       if (userId !== undefined) {
         presence.deleteConnection(userId, socket);
+        if (!presence.isActive(userId)) {
+          becomeInactive(userId);
+        }
       }
       logger.info({ event: "connection_closed", connectionId, code });
     });
@@ -246,6 +328,7 @@ export function createDeliveryService(
       heartbeat = startPresenceHeartbeat(presence, {
         intervalMs: heartbeatIntervalMs,
         staleMs: connectionStaleMs,
+        onBecameInactive: becomeInactive,
       });
       if (options.consumer !== undefined) {
         await options.consumer.start();
@@ -261,6 +344,7 @@ export function createDeliveryService(
     },
     async close() {
       heartbeat?.stop();
+      typing.stop();
 
       for (const client of webSocketServer.clients) {
         client.close(1001, "Server shutting down");
@@ -333,11 +417,13 @@ function run(): void {
     ),
     presence,
     database,
+    members: database.members,
     consumer,
     heartbeatIntervalMs: env.HEARTBEAT_INTERVAL_MS,
     connectionStaleMs: env.CONNECTION_STALE_MS,
     wsMaxPayloadBytes: env.WS_MAX_PAYLOAD_BYTES,
     wsAuthTimeoutMs: env.WS_AUTH_TIMEOUT_MS,
+    typingTimeoutMs: env.TYPING_TIMEOUT_MS,
   });
 
   let shuttingDown = false;

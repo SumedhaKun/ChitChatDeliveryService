@@ -48,8 +48,9 @@ Clients connect to `ws://localhost:8082` and must send this first text frame:
 { "type": "auth", "accessToken": "<supabase-access-token>" }
 ```
 
-Successful authentication returns `{ "type": "auth_ack" }`. After that the
-connection is receive-only. Delivered messages look like:
+Successful authentication returns `{ "type": "auth_ack" }`, then an
+`activity_snapshot` of contacts who currently have action `set`. After auth the
+client may send activity and typing frames. Delivered messages look like:
 
 ```json
 {
@@ -64,8 +65,31 @@ connection is receive-only. Delivered messages look like:
 }
 ```
 
+Activity and typing:
+
+```json
+{ "type": "activity", "action": "set" }
+{ "type": "activity", "action": "delete" }
+{ "type": "typing", "conversationId": "…", "isTyping": true }
+```
+
+```json
+{ "type": "activity_changed", "userId": "…", "action": "set" }
+{ "type": "activity_snapshot", "users": [{ "userId": "…", "action": "set" }] }
+{ "type": "typing", "userId": "…", "conversationId": "…", "isTyping": true }
+```
+
+`set` means the user is active. `delete` is an explicit inactive status while
+they may still be connected. `timeout` is inferred when their last socket
+closes or goes stale. Activity fans out to other members of any shared
+conversation. Typing fans out only to other members of that `conversationId`.
+A typing `true` without a refresh is auto-cleared after `TYPING_TIMEOUT_MS`.
+Typing in a conversation the sender is not in returns `{ "type": "error",
+"code": "FORBIDDEN" }`.
+
 The sender is never included in WebSocket fan-out or push notification. Offline
-recipients currently hit a no-op push notifier.
+recipients currently hit a no-op push notifier. Activity and typing are not
+persisted and are not push-notified.
 
 `GET /health` returns `{ "status": "ok" }`.
 

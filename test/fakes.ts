@@ -1,5 +1,6 @@
 import { WebSocket } from "ws";
 
+import type { MemberRepository } from "../src/db.js";
 import type { SocketLike } from "../src/presence.js";
 
 export class FakeSocket implements SocketLike {
@@ -30,4 +31,14 @@ export class FakeSocket implements SocketLike {
     this.terminated = true;
     this.readyState = WebSocket.CLOSED;
   }
+}
+
+export function fakeMembers(
+  overrides: Partial<MemberRepository> = {},
+): MemberRepository {
+  return {
+    getUserIds: () => Promise.resolve([]),
+    getContactIds: () => Promise.resolve([]),
+    ...overrides,
+  };
 }

@@ -6,7 +6,7 @@ import { TtlDedupe } from "../src/dedupe.js";
 import { DeliveryHandler, type PushNotifier } from "../src/delivery.js";
 import type { MessageCreatedEvent } from "../src/events.js";
 import { Presence } from "../src/presence.js";
-import { FakeSocket } from "./fakes.js";
+import { FakeSocket, fakeMembers } from "./fakes.js";
 
 function event(
   overrides: Partial<MessageCreatedEvent> = {},
@@ -37,9 +37,9 @@ describe("DeliveryHandler", () => {
     presence.setConnection(recipientId, second);
 
     const handler = new DeliveryHandler(
-      {
+      fakeMembers({
         getUserIds: () => Promise.resolve([senderId, recipientId]),
-      },
+      }),
       presence,
       { notifyMessageCreated: notify },
       new TtlDedupe(60_000, 100),
@@ -73,9 +73,9 @@ describe("DeliveryHandler", () => {
     const notify: PushNotifier["notifyMessageCreated"] = vi.fn();
 
     const handler = new DeliveryHandler(
-      {
+      fakeMembers({
         getUserIds: () => Promise.resolve([senderId, offlineId]),
-      },
+      }),
       new Presence(),
       { notifyMessageCreated: notify },
       new TtlDedupe(60_000, 100),
@@ -98,7 +98,7 @@ describe("DeliveryHandler", () => {
     presence.setConnection(recipientId, healthy);
 
     const handler = new DeliveryHandler(
-      { getUserIds: () => Promise.resolve([recipientId]) },
+      fakeMembers({ getUserIds: () => Promise.resolve([recipientId]) }),
       presence,
       { notifyMessageCreated: vi.fn() },
       new TtlDedupe(60_000, 100),
@@ -120,7 +120,7 @@ describe("DeliveryHandler", () => {
     presence.setConnection(recipientId, throwing);
 
     const handler = new DeliveryHandler(
-      { getUserIds: () => Promise.resolve([recipientId]) },
+      fakeMembers({ getUserIds: () => Promise.resolve([recipientId]) }),
       presence,
       { notifyMessageCreated: vi.fn() },
       new TtlDedupe(60_000, 100),
@@ -139,7 +139,7 @@ describe("DeliveryHandler", () => {
     const socket = new FakeSocket();
     presence.setConnection(recipientId, socket);
     const handler = new DeliveryHandler(
-      { getUserIds },
+      fakeMembers({ getUserIds }),
       presence,
       { notifyMessageCreated: vi.fn() },
       new TtlDedupe(60_000, 100),

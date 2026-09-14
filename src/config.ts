@@ -19,6 +19,7 @@ const environmentSchema = z.object({
   CONNECTION_STALE_MS: positiveInteger.default(60_000),
   DEDUPE_TTL_MS: positiveInteger.default(300_000),
   DEDUPE_MAX_ENTRIES: positiveInteger.default(10_000),
+  TYPING_TIMEOUT_MS: positiveInteger.default(5_000),
 });
 
 export type Environment = z.infer<typeof environmentSchema>;

@@ -1,9 +1,8 @@
-import WebSocket from "ws";
-
 import type { MemberRepository } from "./db.js";
-import type { TtlDedupe } from "./dedupe.js";
+import { TtlDedupe } from "./dedupe.js";
 import type { MessageCreatedEvent } from "./events.js";
-import type { Presence, SocketLike } from "./presence.js";
+import { sendToOpenSockets } from "./fanout.js";
+import type { Presence } from "./presence.js";
 
 export interface PushNotifier {
   notifyMessageCreated(
@@ -50,16 +49,17 @@ export class DeliveryHandler {
     let websocketSends = 0;
 
     for (const userId of recipients) {
-      const openSockets = [
-        ...this.presence.getConnections(userId).keys(),
-      ].filter((socket) => socket.readyState === WebSocket.OPEN);
-      if (openSockets.length === 0) {
+      const sent = sendToOpenSockets(
+        this.presence,
+        userId,
+        payload,
+        this.logger,
+      );
+      if (sent === 0) {
         pushTasks.push(this.notifyBestEffort(userId, event));
         continue;
       }
-      websocketSends += openSockets.length;
-      for (const socket of openSockets)
-        this.sendBestEffort(userId, socket, payload);
+      websocketSends += sent;
     }
 
     await Promise.all(pushTasks);
@@ -72,26 +72,6 @@ export class DeliveryHandler {
       websocketSends,
       pushNotifications: pushTasks.length,
     });
-  }
-
-  private sendBestEffort(
-    userId: string,
-    socket: SocketLike,
-    payload: string,
-  ): void {
-    try {
-      socket.send(payload, (error) => {
-        if (!error) return;
-        this.presence.deleteConnection(userId, socket);
-        this.logger.error("WebSocket delivery failed", {
-          userId,
-          error: error.message,
-        });
-      });
-    } catch (error) {
-      this.presence.deleteConnection(userId, socket);
-      this.logger.error("WebSocket delivery failed", { userId, error });
-    }
   }
 
   private async notifyBestEffort(

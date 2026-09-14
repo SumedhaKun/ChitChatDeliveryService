@@ -17,6 +17,7 @@ describe("readEnvironment", () => {
       KAFKA_GROUP_ID: "chitchat-delivery-service",
       HEARTBEAT_INTERVAL_MS: 30_000,
       CONNECTION_STALE_MS: 60_000,
+      TYPING_TIMEOUT_MS: 5_000,
     });
   });
 
