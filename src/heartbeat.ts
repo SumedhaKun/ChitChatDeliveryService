@@ -1,9 +1,10 @@
-import type { Presence } from "./presence.js";
+import type { Presence, SocketLike } from "./presence.js";
 
 export interface HeartbeatOptions {
   intervalMs: number;
   staleMs: number;
   now?: () => number;
+  onBecameInactive?: (userId: string) => void;
 }
 
 export interface Heartbeat {
@@ -18,7 +19,19 @@ export function startPresenceHeartbeat(
   const timer = setInterval(() => {
     const timestamp = now();
     presence.pingAll();
-    presence.removeStale(timestamp - options.staleMs);
+    const idleUsers = new Set<string>();
+    presence.removeStale(
+      timestamp - options.staleMs,
+      (socket: SocketLike, userId: string) => {
+        socket.terminate?.();
+        idleUsers.add(userId);
+      },
+    );
+    for (const userId of idleUsers) {
+      if (!presence.isActive(userId)) {
+        options.onBecameInactive?.(userId);
+      }
+    }
   }, options.intervalMs);
   timer.unref();
 
